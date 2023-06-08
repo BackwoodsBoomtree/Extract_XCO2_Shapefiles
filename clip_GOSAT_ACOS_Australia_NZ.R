@@ -1,0 +1,183 @@
+library(terra)
+library(ncdf4)
+library(parallel)
+
+### roi_file can be a path to a shapefile or a manually created polygon using vect()
+
+terraOptions(memfrac = 0.8) # Fraction of memory to allow terra
+
+tmpdir        <- "C:/Rwork"
+out_dir       <- "G:/GOSAT_ACOS/extracted/Australia_NZ"
+out_name      <- "/Australia_NZ_GOSAT_ACOS_v9_"
+f_list        <- list.files("G:/GOSAT_ACOS/XCO2/v9", pattern = "*.nc", full.names = TRUE, recursive = TRUE)
+roi_file      <- "/mnt/g/Amazon_shp/Amazon_poly.shp"
+land_frac     <- 100
+land_frac_var <- "Sounding/land_fraction"
+qc            <- 1 # 0 = bad; 1 = good
+qc_var        <- "xco2_quality_flag"  
+notes         <- "This data has been filtered to include only good soundings (Quality Flag = 1) that have a land fraction of 100%"
+
+
+tmp_create <- function(tmpdir) {
+  
+  p_tmp_dir <- paste0(tmpdir, "/", as.character(Sys.getpid())) # Process ID
+  
+  if (!dir.exists(p_tmp_dir)) {
+    dir.create(p_tmp_dir, recursive = TRUE)
+  }
+  
+  terraOptions(tempdir = p_tmp_dir)
+}
+tmp_remove <- function(tmpdir) {
+  
+  p_tmp_dir <- paste0(tmpdir, "/", as.character(Sys.getpid())) # Process ID
+  unlink(p_tmp_dir, recursive = TRUE)
+}
+
+clip_nc <- function(input_file, roi_file, out_dir, out_name, land_cover,
+                    land_cover_var, land_cover_perc, cloud_fraction, tmpdir) {
+  
+  tmp_create(tmpdir)
+  
+  if (!dir.exists(out_dir)){
+    dir.create(out_dir, recursive = TRUE)
+  }
+  
+  time_s <- Sys.time()
+  
+  # if needed, vectorize roi shp file for clipping
+  if (typeof(roi_file) != "S4"){
+    roi <- vect(roi_file)
+    roi <- aggregate(roi)
+  } else {
+    roi <- aggregate(roi_file)
+  }
+  
+  t_data <- nc_open(input_file)
+  
+  # Get spatial and time
+  coords           <- cbind(ncvar_get(t_data, "longitude"), ncvar_get(t_data, "latitude"))
+  colnames(coords) <- c("lon", "lat")
+  t                <- basename(input_file)
+  t                <- substr(t, 12, 17)
+  t                <- paste0("20", t)
+  t                <- gsub("(\\d{4})(\\d{2})(\\d{2})$","\\1-\\2-\\3",t) # add dashes
+  
+  # Get variables and transform to vect for clipping to ROI
+  df_var                 <- data.frame(lon = ncvar_get(t_data, "longitude"))
+  df_var$lat             <- ncvar_get(t_data, "latitude")
+  
+  df_var$xco2              <- ncvar_get(t_data, "xco2")
+  df_var$xco2_uncertainty  <- ncvar_get(t_data, "xco2_uncertainty")
+  df_var$xco2_quality_flag <- ncvar_get(t_data, qc_var)
+  df_var$land_fraction     <- ncvar_get(t_data, land_frac_var)
+  
+  nc_close(t_data)
+  
+  # Filter by land and QC
+  df_var <- df_var[df_var$land_fraction >= land_frac, ]
+  df_var <- df_var[df_var$xco2_quality_flag >= qc, ]
+
+  
+  # Put coords in their own
+  coords <- cbind(df_var$lon, df_var$lat)
+  df_var <- subset(df_var, select = -c(lon,lat))
+  
+  # Clip data
+  vec      <- vect(coords, atts = df_var, crs = "+proj=longlat +datum=WGS84")
+  var_roi  <- intersect(vec, roi)
+  
+  # If number of soundings > 0, then proceed
+  if (nrow(crds(var_roi, df = TRUE)) == 0) {
+    message(paste0("File for this date is being skipped as it has 0 soundings for the region: ", t))
+    
+  } else {
+    # Build data frame for writing to nc file
+    df <- crds(var_roi, df = TRUE)
+    
+    for (i in 1:length(names(var_roi))) {
+      df <- cbind(df, var_roi[[i]])
+    }
+    
+    # kick out
+    rm(df_var, vec, var_roi)
+    
+    invisible(gc())
+    
+    #### Create NC file ####
+    ### Note: When creating point files, use number of points as a dim
+    ### rather than lon and lat, and make lon and lat variables.
+    ###
+    
+    # Create dimensions nc file
+    elemdim <- ncdim_def("obs", "", seq(1, nrow(df)))
+    
+    # Dates
+    t_num   <- as.numeric(julian(as.Date(t), origin = as.Date("1970-01-01")))
+    
+    # define variables
+    fillvalue     <- -9999
+    dlname        <- "time"
+    time_def      <- ncvar_def("time", "days since 1970-01-01", elemdim, fillvalue, dlname, prec = "float")
+    
+    dlname        <- "longitude"
+    lon_def       <- ncvar_def("longitude", "degrees_east", elemdim, fillvalue, dlname, prec = "float")
+    
+    dlname        <- "latitude"
+    lat_def       <- ncvar_def("latitude", "degrees_north", elemdim, fillvalue, dlname, prec = "float")
+    
+    dlname        <- "xco2"
+    xco2_def      <- ncvar_def("XCO2", "ppm (Column-averaged dry-air mole fraction of CO2 (includes bias correction))", elemdim, fillvalue, dlname, prec = "float")
+    
+    dlname        <- "xco2_uncertainty"
+    xco2_un_def   <- ncvar_def("XCO2_Posterior_Error", "ppm", elemdim, fillvalue, dlname, prec = "float")
+    
+    dlname        <- "xco2_quality_flag"
+    xco2_qc_def   <- ncvar_def("XCO2_Quality_Flag", "none", elemdim, fillvalue, dlname, prec = "float")
+    
+    dlname        <- "land_fraction"
+    land_def      <- ncvar_def("Land Fraction", "percent", elemdim, fillvalue, dlname, prec = "float")
+    
+    # create netCDF file and put arrays
+    out_f <- paste0(out_dir, out_name, t, ".nc")
+    
+    ncout <- nc_create(out_f,
+                       list(time_def, lon_def, lat_def, xco2_def, xco2_un_def, xco2_qc_def, land_def), 
+                       force_v4 = TRUE)
+    
+    # put variables
+    ncvar_put(ncout, time_def, rep(t_num, times = nrow(df)))
+    ncvar_put(ncout, lon_def, df$x)
+    ncvar_put(ncout, lat_def, df$y)
+    ncvar_put(ncout, xco2_def, df$xco2)
+    ncvar_put(ncout, xco2_un_def, df$xco2_uncertainty)
+    ncvar_put(ncout, xco2_qc_def, df$xco2_quality_flag)
+    ncvar_put(ncout, land_def, df$land_fraction)
+    
+    # put additional attributes into dimension and data variables
+    ncatt_put(ncout,"lon","axis","X")
+    ncatt_put(ncout,"lat","axis","Y")
+    ncatt_put(ncout,"time","axis","T")
+    
+    # add global attributes
+    ncatt_put(ncout,0,"title", "GOSAT/ACOS v9 XCO2")
+    ncatt_put(ncout,0,"institution", "University of Oklahoma")
+    ncatt_put(ncout,0,"source", "Russell Doughty, PhD")
+    ncatt_put(ncout,0,"date_created", date())
+    ncatt_put(ncout,0,"notes", notes)
+    
+    # Close input file
+    nc_close(ncout)
+    
+    time_e   <- Sys.time()
+    time_dif <- difftime(time_e, time_s)
+    
+    message(paste0("Saved ", out_f, ". Time elapsed: ", time_dif))
+  }
+  
+  tmp_remove(tmpdir)
+}
+
+mclapply(f_list, clip_nc, mc.cores = 10, mc.preschedule = FALSE, roi_file = roi_file,
+         out_dir = out_dir, out_name = out_name, land_cover = land_cover, land_cover_var = land_cover_var,
+         land_cover_perc = land_cover_perc, cloud_fraction = cloud_fraction,  tmpdir = tmpdir)
