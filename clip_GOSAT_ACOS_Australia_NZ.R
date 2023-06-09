@@ -6,14 +6,14 @@ library(parallel)
 
 terraOptions(memfrac = 0.8) # Fraction of memory to allow terra
 
-tmpdir        <- "C:/Rwork"
-out_dir       <- "G:/GOSAT_ACOS/extracted/Australia_NZ"
+tmpdir        <- "/mnt/c/Rwork"
+out_dir       <- "/mnt/g/GOSAT_ACOS/extracted/Australia_NZ"
 out_name      <- "/Australia_NZ_GOSAT_ACOS_v9_"
-f_list        <- list.files("G:/GOSAT_ACOS/XCO2/v9", pattern = "*.nc", full.names = TRUE, recursive = TRUE)
-roi_file      <- "/mnt/g/Amazon_shp/Amazon_poly.shp"
+f_list        <- list.files("/mnt/g/GOSAT_ACOS/XCO2/v9", pattern = "*.nc4", full.names = TRUE, recursive = TRUE)
+roi_file      <- "/mnt/g/Australia_NZL/AUS_NZL_shp/aus_nzl.shp"
 land_frac     <- 100
 land_frac_var <- "Sounding/land_fraction"
-qc            <- 1 # 0 = bad; 1 = good
+qc            <- 0 # 0 = good; 1 = bad
 qc_var        <- "xco2_quality_flag"  
 notes         <- "This data has been filtered to include only good soundings (Quality Flag = 1) that have a land fraction of 100%"
 
@@ -34,8 +34,8 @@ tmp_remove <- function(tmpdir) {
   unlink(p_tmp_dir, recursive = TRUE)
 }
 
-clip_nc <- function(input_file, roi_file, out_dir, out_name, land_cover,
-                    land_cover_var, land_cover_perc, cloud_fraction, tmpdir) {
+clip_nc <- function(input_file, roi_file, out_dir, out_name, land_frac,
+                    land_frac_var, qc, qc_var, tmpdir) {
   
   tmp_create(tmpdir)
   
@@ -76,9 +76,8 @@ clip_nc <- function(input_file, roi_file, out_dir, out_name, land_cover,
   
   # Filter by land and QC
   df_var <- df_var[df_var$land_fraction >= land_frac, ]
-  df_var <- df_var[df_var$xco2_quality_flag >= qc, ]
+  df_var <- df_var[df_var$xco2_quality_flag == qc, ]
 
-  
   # Put coords in their own
   coords <- cbind(df_var$lon, df_var$lat)
   df_var <- subset(df_var, select = -c(lon,lat))
@@ -89,7 +88,7 @@ clip_nc <- function(input_file, roi_file, out_dir, out_name, land_cover,
   
   # If number of soundings > 0, then proceed
   if (nrow(crds(var_roi, df = TRUE)) == 0) {
-    message(paste0("File for this date is being skipped as it has 0 soundings for the region: ", t))
+    message(paste0("File for this date is being skipped as it has 0 soundings for the region: ", t, "\n"))
     
   } else {
     # Build data frame for writing to nc file
@@ -121,22 +120,22 @@ clip_nc <- function(input_file, roi_file, out_dir, out_name, land_cover,
     time_def      <- ncvar_def("time", "days since 1970-01-01", elemdim, fillvalue, dlname, prec = "float")
     
     dlname        <- "longitude"
-    lon_def       <- ncvar_def("longitude", "degrees_east", elemdim, fillvalue, dlname, prec = "float")
+    lon_def       <- ncvar_def("lon", "degrees_east", elemdim, fillvalue, dlname, prec = "float")
     
     dlname        <- "latitude"
-    lat_def       <- ncvar_def("latitude", "degrees_north", elemdim, fillvalue, dlname, prec = "float")
+    lat_def       <- ncvar_def("lat", "degrees_north", elemdim, fillvalue, dlname, prec = "float")
     
-    dlname        <- "xco2"
-    xco2_def      <- ncvar_def("XCO2", "ppm (Column-averaged dry-air mole fraction of CO2 (includes bias correction))", elemdim, fillvalue, dlname, prec = "float")
+    dlname        <- "XCO2"
+    xco2_def      <- ncvar_def("xco2", "ppm (Column-averaged dry-air mole fraction of CO2 (includes bias correction))", elemdim, fillvalue, dlname, prec = "float")
     
-    dlname        <- "xco2_uncertainty"
-    xco2_un_def   <- ncvar_def("XCO2_Posterior_Error", "ppm", elemdim, fillvalue, dlname, prec = "float")
+    dlname        <- "XCO2_Posterior_Error"
+    xco2_un_def   <- ncvar_def("xco2_uncertainty", "ppm", elemdim, fillvalue, dlname, prec = "float")
     
-    dlname        <- "xco2_quality_flag"
-    xco2_qc_def   <- ncvar_def("XCO2_Quality_Flag", "none", elemdim, fillvalue, dlname, prec = "float")
+    dlname        <- "XCO2_Quality_Flag"
+    xco2_qc_def   <- ncvar_def("xco2_quality_flag", "none", elemdim, fillvalue, dlname, prec = "float")
     
-    dlname        <- "land_fraction"
-    land_def      <- ncvar_def("Land Fraction", "percent", elemdim, fillvalue, dlname, prec = "float")
+    dlname        <- "Land Fraction"
+    land_def      <- ncvar_def("land_fraction", "percent", elemdim, fillvalue, dlname, prec = "float")
     
     # create netCDF file and put arrays
     out_f <- paste0(out_dir, out_name, t, ".nc")
@@ -172,12 +171,12 @@ clip_nc <- function(input_file, roi_file, out_dir, out_name, land_cover,
     time_e   <- Sys.time()
     time_dif <- difftime(time_e, time_s)
     
-    message(paste0("Saved ", out_f, ". Time elapsed: ", time_dif))
+    message(paste0("Saved ", out_f, ". Time elapsed: ", time_dif, "\n"))
   }
   
   tmp_remove(tmpdir)
 }
 
 mclapply(f_list, clip_nc, mc.cores = 10, mc.preschedule = FALSE, roi_file = roi_file,
-         out_dir = out_dir, out_name = out_name, land_cover = land_cover, land_cover_var = land_cover_var,
-         land_cover_perc = land_cover_perc, cloud_fraction = cloud_fraction,  tmpdir = tmpdir)
+         out_dir = out_dir, out_name = out_name, land_frac = land_frac, land_frac_var = land_frac_var,
+         qc = qc, qc_var = qc_var,  tmpdir = tmpdir)
