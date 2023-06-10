@@ -9,10 +9,10 @@ terraOptions(memfrac = 0.8) # Fraction of memory to allow terra
 tmpdir        <- "/mnt/c/Rwork"
 out_dir       <- "/mnt/g/GOSAT_RemoTec/extracted/Australia_NZ"
 out_name      <- "/Australia_NZ_GOSATRemoTeC_"
-f_list        <- list.files("/mnt/g/GOSAT_RemoTeC", pattern = "*.nc4", full.names = TRUE, recursive = TRUE)
+f_list        <- list.files("/mnt/g/GOSAT_RemoTeC/original", pattern = "*.nc", full.names = TRUE, recursive = TRUE)
 roi_file      <- "/mnt/g/Australia_NZL/AUS_NZL_shp/aus_nzl.shp"
 land          <- 0 # 0 = land; 1 = ocean
-land_var <- "flag_landtype"
+land_var      <- "flag_landtype"
 qc            <- 0 # 0 = good; 1 = bad
 qc_var        <- "xco2_quality_flag"  
 notes         <- "This data has been filtered to include only good soundings (Quality Flag = 0) that are land (flag_landtype = 0)"
@@ -59,8 +59,7 @@ clip_nc <- function(input_file, roi_file, out_dir, out_name, land,
   coords           <- cbind(ncvar_get(t_data, "longitude"), ncvar_get(t_data, "latitude"))
   colnames(coords) <- c("lon", "lat")
   t                <- basename(input_file)
-  t                <- substr(t, 12, 17)
-  t                <- paste0("20", t)
+  t                <- substr(t, 22, 29)
   t                <- gsub("(\\d{4})(\\d{2})(\\d{2})$","\\1-\\2-\\3",t) # add dashes
   
   # Get variables and transform to vect for clipping to ROI
